@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vastlaunch"
+version = "0.1.0"
+description = "SkyPilot-style one-command GPU jobs on vast.ai"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyyaml>=6.0",
+  "vastai>=0.2",
+]
+
+[project.scripts]
+vastlaunch = "vastlaunch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,45 @@
+# Example Snakefile using vastlaunch as the cluster backend.
+#
+# Run with:
+#   snakemake --executor cluster-generic \
+#     --cluster-generic-submit-cmd "vastlaunch submit-script --config vastlaunch.yaml --gpu {resources.gpu_model}:{resources.gpu_count} --disk {resources.disk_gb} {script}" \
+#     --cluster-generic-status-cmd "vastlaunch status {jobid}" \
+#     --cluster-generic-cancel-cmd "vastlaunch destroy {jobid}" \
+#     --jobs 8 --retries 2
+#
+# Outputs must live on shared storage (S3 / B2 / GCS) so Snakemake can see
+# them after the vast instance is destroyed.
+
+CONFIGS = ["lr1e-3", "lr1e-4", "lr1e-5"]
+BUCKET = "s3://my-bucket/sweep1"
+
+
+rule all:
+    input:
+        expand(f"{BUCKET}/{{exp}}/metrics.json", exp=CONFIGS)
+
+
+rule train:
+    input:
+        config = "configs/{exp}.yaml"
+    output:
+        ckpt = storage.s3(f"{BUCKET}/{{exp}}/final.pt")
+    resources:
+        gpu_model = "RTX_4090",
+        gpu_count = 1,
+        disk_gb = 80,
+    shell:
+        "python train.py --config {input.config} --out {output.ckpt}"
+
+
+rule evaluate:
+    input:
+        ckpt = f"{BUCKET}/{{exp}}/final.pt"
+    output:
+        metrics = storage.s3(f"{BUCKET}/{{exp}}/metrics.json")
+    resources:
+        gpu_model = "RTX_3090",   # cheaper for eval
+        gpu_count = 1,
+        disk_gb = 40,
+    shell:
+        "python eval.py --ckpt {input.ckpt} --out {output.metrics}"

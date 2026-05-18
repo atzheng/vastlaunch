@@ -1,0 +1,40 @@
+# Example vastlaunch job config.
+# All resource fields are optional; defaults shown below.
+
+name: my-experiment
+
+resources:
+  accelerators: RTX_4090:1   # GPU_NAME:COUNT — try A100, H100, RTX_3090, RTX_4090, ...
+  cpus: 8+                   # min cores (suffix '+' = at least)
+  memory: 32+                # min RAM in GB
+  disk_size: 80              # GB of container disk
+  cuda_version: "12.1+"      # min host CUDA driver version
+  reliability: 0.98          # min host reliability score (0-1)
+  inet_down: 200             # min Mbps download bandwidth
+  use_spot: false            # interruptible (needs max_price as the bid)
+  max_price: 0.50            # $/hr ceiling
+  # region: "[US,CA]"        # optional geolocation filter
+
+# A Docker image with CUDA + your framework. Bake your deps into a custom
+# image and push to a registry to skip pip-install time on every launch.
+image: pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel
+
+# Local directory rsynced to /workspace on the remote.
+workdir: .
+
+# Env vars on the remote. $VAR expands from your local shell.
+envs:
+  WANDB_API_KEY: $WANDB_API_KEY
+  HF_TOKEN: $HF_TOKEN
+  EXPERIMENT_NAME: my-experiment
+
+# Runs once after the workdir is synced.
+setup: |
+  pip install -r requirements.txt
+
+# Main command.
+run: |
+  python train.py --out /workspace/output
+
+# Destroy the instance after run completes (default true).
+auto_destroy: true
