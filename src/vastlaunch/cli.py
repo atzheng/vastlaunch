@@ -89,6 +89,9 @@ def _server_submit(args: argparse.Namespace) -> int:
     else:
         print("[vastlaunch] no job config found", file=sys.stderr)
         return 1
+    # Resolve secrets client-side so the server doesn't need local env vars.
+    # This raises if any required secret is missing from the local environment.
+    yaml_text = config.resolve_secrets_in_yaml(yaml_text)
     result = client.submit(yaml_text)
     print(f"[vastlaunch] submitted: {result['job_id']} ({result['name']})", file=sys.stderr)
     print(result["job_id"])

@@ -63,27 +63,50 @@ def resolve_secrets(secrets: dict) -> dict:
 
     Each entry in `secrets` maps a remote env var name to either:
       - None / empty string: read from local env using the same key name
-      - "OTHER_VAR" or "$OTHER_VAR": read from that local env var name
+      - "$OTHER_VAR": read from that local env var name
+      - any other non-empty string: treated as an already-resolved literal value
 
     Raises ValueError if any secret is not set in the local environment.
     """
     out = {}
     missing = []
     for k, v in secrets.items():
-        if v and isinstance(v, str):
+        if v and isinstance(v, str) and v.startswith("$"):
+            # $VAR_NAME → look up that env var
             local_name = v.lstrip("$")
+            val = os.environ.get(local_name)
+            if val is None:
+                missing.append(local_name)
+            else:
+                out[k] = val
+        elif v and isinstance(v, str):
+            # Already-resolved literal value (e.g. sent by client after local resolution)
+            out[k] = v
         else:
+            # None/empty → look up by key name
             local_name = k
-        val = os.environ.get(local_name)
-        if val is None:
-            missing.append(local_name)
-        else:
-            out[k] = val
+            val = os.environ.get(local_name)
+            if val is None:
+                missing.append(local_name)
+            else:
+                out[k] = val
     if missing:
         raise ValueError(
             f"secrets not set in local environment: {', '.join(missing)}"
         )
     return out
+
+
+def resolve_secrets_in_yaml(yaml_text: str) -> str:
+    """Return YAML with the secrets section replaced by their resolved values.
+
+    Used by the CLI before sending a job to a remote server, so the server
+    doesn't need access to the client's local environment variables.
+    """
+    data = yaml.safe_load(yaml_text) or {}
+    if data.get("secrets"):
+        data["secrets"] = resolve_secrets(data["secrets"])
+    return yaml.dump(data, default_flow_style=False)
 
 
 def _build_job(data: dict) -> Job:
