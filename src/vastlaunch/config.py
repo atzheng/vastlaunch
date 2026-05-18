@@ -98,14 +98,20 @@ def resolve_secrets(secrets: dict) -> dict:
 
 
 def resolve_secrets_in_yaml(yaml_text: str) -> str:
-    """Return YAML with the secrets section replaced by their resolved values.
+    """Return YAML with secrets resolved and merged into envs.
 
-    Used by the CLI before sending a job to a remote server, so the server
-    doesn't need access to the client's local environment variables.
+    Used by the CLI before sending a job to a remote server. Secrets are
+    resolved from the local environment here, then folded into the envs dict
+    as plain string values. The secrets key is removed so the server never
+    needs to resolve secrets itself (it may not have those env vars).
     """
     data = yaml.safe_load(yaml_text) or {}
-    if data.get("secrets"):
-        data["secrets"] = resolve_secrets(data["secrets"])
+    raw_secrets = data.pop("secrets", None) or {}
+    if raw_secrets:
+        resolved = resolve_secrets(raw_secrets)
+        envs = data.get("envs") or {}
+        envs.update(resolved)
+        data["envs"] = envs
     return yaml.dump(data, default_flow_style=False)
 
 
