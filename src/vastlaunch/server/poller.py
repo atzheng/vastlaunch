@@ -163,8 +163,10 @@ def _check_connecting(job: dict) -> None:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
     except subprocess.TimeoutExpired:
+        log(f"{job_id}: SSH probe timed out (key={_SSH_KEY})")
         return
     if proc.returncode != 0 or "ok" not in proc.stdout:
+        log(f"{job_id}: SSH probe failed rc={proc.returncode} stderr={proc.stderr.strip()!r} (key={_SSH_KEY})")
         return  # not ready yet, retry next tick
 
     # SSH is ready — sync workdir (if any) and start the job in tmux
