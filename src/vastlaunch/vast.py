@@ -22,13 +22,17 @@ def _check_cli() -> None:
         )
 
 
-def _run(args: list[str], check: bool = True) -> str:
+def _run(args: list[str], check: bool = True, timeout: int = 60) -> str:
     _check_cli()
-    proc = subprocess.run(
-        ["vastai", *args],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["vastai", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise VastError(f"vastai {' '.join(args)} timed out after {timeout}s")
     if check and proc.returncode != 0:
         raise VastError(
             f"vastai {' '.join(args)} failed (rc={proc.returncode}):\n"
@@ -114,9 +118,15 @@ def create_instance(
 
     out = _run(args)
     data = _parse_json(out)
-    if not isinstance(data, dict) or not data.get("success", False):
+    if not isinstance(data, dict):
         raise VastError(f"create instance failed: {data}")
     instance_id = data.get("new_contract") or data.get("id")
+    if not data.get("success", False):
+        # vast sometimes returns success=False with a contract ID (partial creation).
+        # Return the ID so the caller can destroy it; status polling will surface the error.
+        if instance_id is not None:
+            return int(instance_id)
+        raise VastError(f"create instance failed (no contract id): {data}")
     if instance_id is None:
         raise VastError(f"no instance id in create response: {data}")
     return int(instance_id)
@@ -137,11 +147,11 @@ def list_instances() -> list[dict]:
 
 
 def destroy_instance(instance_id: int | str) -> None:
-    _run(["destroy", "instance", str(instance_id)], check=False)
+    _run(["destroy", "instance", str(instance_id), "-y"], check=False)
 
 
 def stop_instance(instance_id: int | str) -> None:
-    _run(["stop", "instance", str(instance_id)], check=False)
+    _run(["stop", "instance", str(instance_id), "-y"], check=False)
 
 
 def get_ssh_info(info: dict) -> tuple[str | None, int | None]:

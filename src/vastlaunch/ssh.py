@@ -30,6 +30,7 @@ def _ssh_cmd(host: str, port: int, user: str = "root",
 def wait_for_ssh(host: str, port: int, *, user: str = "root", key: str | None = None,
                  timeout: int = 300, interval: int = 8) -> None:
     """Block until SSH responds, or raise TimeoutError."""
+    import sys
     deadline = time.time() + timeout
     last_err = ""
     attempts = 0
@@ -39,7 +40,11 @@ def wait_for_ssh(host: str, port: int, *, user: str = "root", key: str | None = 
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode == 0 and "ok" in proc.stdout:
             return
-        last_err = proc.stderr.strip().splitlines()[-1] if proc.stderr else ""
+        err = proc.stderr.strip().splitlines()[-1] if proc.stderr else f"rc={proc.returncode}"
+        if err != last_err:
+            print(f"[vastlaunch] SSH {host}:{port} not ready (attempt {attempts}): {err}",
+                  file=sys.stderr, flush=True)
+            last_err = err
         time.sleep(interval)
     raise TimeoutError(
         f"SSH {host}:{port} not ready after {timeout}s ({attempts} attempts). "
@@ -74,7 +79,7 @@ def rsync_to(host: str, port: int, src: str | Path, dst: str, *,
     )
     if key:
         ssh_e += f" -i {key}"
-    cmd = ["rsync", "-az", "--info=progress2", "-e", ssh_e]
+    cmd = ["rsync", "-az", "--progress", "-e", ssh_e]
     if delete:
         cmd.append("--delete")
     for pat in excludes or []:
@@ -91,7 +96,7 @@ def rsync_from(host: str, port: int, src: str, dst: str | Path, *,
     ssh_e = "ssh -p {port} {opts}".format(port=port, opts=" ".join(_SSH_BASE))
     if key:
         ssh_e += f" -i {key}"
-    cmd = ["rsync", "-az", "--info=progress2", "-e", ssh_e,
+    cmd = ["rsync", "-az", "--progress", "-e", ssh_e,
            f"{user}@{host}:{src}", str(dst)]
     return subprocess.call(cmd)
 

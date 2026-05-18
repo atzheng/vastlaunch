@@ -19,7 +19,7 @@ REMOTE_EXIT_CODE = f"{REMOTE_WORKDIR}/.exit_code"
 REMOTE_ENVRC = f"{REMOTE_WORKDIR}/.envrc"
 REMOTE_DONE_MARKER = f"{REMOTE_WORKDIR}/.vastlaunch_done"
 TMUX_SESSION = "vastlaunch"
-MAX_LAUNCH_ATTEMPTS = 3
+MAX_LAUNCH_ATTEMPTS = 5
 
 
 class _StartupFailed(Exception):
@@ -72,8 +72,9 @@ def _onstart_script(job: Job) -> str:
     lines = [
         "#!/bin/bash",
         "set -e",
-        # Some vast images don't have rsync/tmux preinstalled
-        "(apt-get update -qq && apt-get install -y -qq rsync tmux openssh-server) "
+        # Some vast images don't have rsync/tmux preinstalled.
+        # Do NOT install openssh-server — vast.ai manages sshd and its authorized_keys.
+        "(apt-get update -qq && apt-get install -y -qq rsync tmux) "
         ">/var/log/vastlaunch-onstart.log 2>&1 || true",
         f"mkdir -p {REMOTE_WORKDIR}",
         f"cat > {REMOTE_ENVRC} <<'__VL_EOF__'",
@@ -81,6 +82,8 @@ def _onstart_script(job: Job) -> str:
     for k, v in job.envs.items():
         if v == "":
             continue
+        lines.append(f"export {k}={shlex.quote(str(v))}")
+    for k, v in job.secrets.items():
         lines.append(f"export {k}={shlex.quote(str(v))}")
     lines.append(f"export VASTLAUNCH_JOB={shlex.quote(job.name)}")
     lines.append("__VL_EOF__")
@@ -116,24 +119,56 @@ def _run_script(job: Job) -> str:
 # wait/poll helpers
 # ---------------------------------------------------------------------------
 
+_TERMINAL_ERROR_STATUSES = {"offline", "exited", "failed", "error"}
+
+_ERROR_MSG_PATTERNS = (
+    "error response from daemon",
+    "oci runtime",
+    "failed to create",
+    "failed to start",
+    "failed to inject",
+    "unresolvable cdi",
+    "cannot allocate",
+)
+
+
+def _status_msg_is_error(msg: str) -> bool:
+    low = msg.lower()
+    return any(p in low for p in _ERROR_MSG_PATTERNS)
+
+
 def wait_for_running(instance_id: int, timeout: int = 900) -> dict:
     """Poll until vast reports the instance running. Returns the info dict."""
     deadline = time.time() + timeout
     last_status: str | None = None
+    last_msg: str | None = None
+    consecutive_api_errors = 0
     while time.time() < deadline:
-        info = vast.show_instance(instance_id)
+        try:
+            info = vast.show_instance(instance_id)
+        except vast.VastError as e:
+            consecutive_api_errors += 1
+            if consecutive_api_errors >= 5:
+                raise RuntimeError(f"show_instance failed {consecutive_api_errors} times: {e}") from e
+            log(f"show_instance transient error ({consecutive_api_errors}/5): {e}")
+            time.sleep(10)
+            continue
+        consecutive_api_errors = 0
         status = info.get("actual_status") or info.get("intended_status") or "?"
-        if status != last_status:
-            log(f"instance {instance_id} status: {status}")
+        msg = info.get("status_msg") or ""
+        if status != last_status or msg != last_msg:
+            log(f"instance {instance_id} status: {status}" + (f" — {msg}" if msg else ""))
             last_status = status
+            last_msg = msg
         if status == "running":
             host, port = vast.get_ssh_info(info)
             if host and port:
                 return info
-        elif status in ("offline", "exited"):
-            # Host may have rejected, try to surface the reason
-            reason = info.get("status_msg") or "no detail"
-            raise RuntimeError(f"instance went to {status} before ready: {reason}")
+        elif status in _TERMINAL_ERROR_STATUSES:
+            reason = msg or "no detail"
+            raise RuntimeError(f"instance went to '{status}': {reason}")
+        elif msg and _status_msg_is_error(msg):
+            raise RuntimeError(f"instance startup error (status={status}): {msg}")
         time.sleep(10)
     raise TimeoutError(f"instance {instance_id} never became ready (timeout {timeout}s)")
 
@@ -193,6 +228,15 @@ def launch(
     raise RuntimeError("unreachable")
 
 
+def _destroy_best_effort(instance_id: int) -> None:
+    """Destroy an instance, logging but not raising on failure."""
+    try:
+        vast.destroy_instance(instance_id)
+    except Exception as e:
+        log(f"warning: destroy instance {instance_id} failed: {e}")
+    state.remove(instance_id)
+
+
 def _attempt_launch(
     job: Job,
     *,
@@ -210,15 +254,18 @@ def _attempt_launch(
         log(f"spot bid: ${bid:.4f}/hr")
 
     log(f"creating instance with image {job.image}, disk {job.resources.disk_size}GB...")
-    instance_id = vast.create_instance(
-        offer_id=offer["id"],
-        image=job.image,
-        disk_gb=job.resources.disk_size,
-        onstart_cmd=onstart,
-        label=job.name,
-        use_spot=job.resources.use_spot,
-        bid_price=bid,
-    )
+    try:
+        instance_id = vast.create_instance(
+            offer_id=offer["id"],
+            image=job.image,
+            disk_gb=job.resources.disk_size,
+            onstart_cmd=onstart,
+            label=job.name,
+            use_spot=job.resources.use_spot,
+            bid_price=bid,
+        )
+    except vast.VastError as e:
+        raise _StartupFailed(offer["id"], f"create_instance failed: {e}") from e
     log(f"instance {instance_id} created")
 
     workdir = Path(extra_workdir or job.workdir or ".").resolve() if (extra_workdir or job.workdir) else None
@@ -230,8 +277,7 @@ def _attempt_launch(
         except (RuntimeError, TimeoutError) as e:
             # Instance never became healthy — destroy it and signal retry
             log(f"instance {instance_id} failed to start, destroying...")
-            vast.destroy_instance(instance_id)
-            state.remove(instance_id)
+            _destroy_best_effort(instance_id)
             raise _StartupFailed(offer["id"], str(e)) from e
 
         host, port = vast.get_ssh_info(info)
@@ -243,8 +289,7 @@ def _attempt_launch(
             ssh.wait_for_ssh(host, port, key=ssh_key, timeout=300)
         except TimeoutError as e:
             log(f"SSH never became ready on instance {instance_id}, destroying...")
-            vast.destroy_instance(instance_id)
-            state.remove(instance_id)
+            _destroy_best_effort(instance_id)
             raise _StartupFailed(offer["id"], str(e)) from e
 
         log("SSH ready")
@@ -279,8 +324,7 @@ def _attempt_launch(
     except Exception:
         state.update(instance_id, status="failed")
         log(f"error after launch, destroying instance {instance_id}...")
-        vast.destroy_instance(instance_id)
-        state.remove(instance_id)
+        _destroy_best_effort(instance_id)
         raise
 
 

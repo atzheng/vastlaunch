@@ -31,6 +31,7 @@ class Job:
     image: str = "pytorch/pytorch:2.4.0-cuda12.4-cudnn9-devel"
     workdir: Optional[str] = "."       # local dir to rsync; None to skip
     envs: dict = field(default_factory=dict)
+    secrets: dict = field(default_factory=dict)
     setup: str = ""
     run: str = ""
     auto_destroy: bool = True
@@ -57,6 +58,34 @@ def expand_envs(envs: dict) -> dict:
     return out
 
 
+def resolve_secrets(secrets: dict) -> dict:
+    """Resolve secret values from local environment.
+
+    Each entry in `secrets` maps a remote env var name to either:
+      - None / empty string: read from local env using the same key name
+      - "OTHER_VAR" or "$OTHER_VAR": read from that local env var name
+
+    Raises ValueError if any secret is not set in the local environment.
+    """
+    out = {}
+    missing = []
+    for k, v in secrets.items():
+        if v and isinstance(v, str):
+            local_name = v.lstrip("$")
+        else:
+            local_name = k
+        val = os.environ.get(local_name)
+        if val is None:
+            missing.append(local_name)
+        else:
+            out[k] = val
+    if missing:
+        raise ValueError(
+            f"secrets not set in local environment: {', '.join(missing)}"
+        )
+    return out
+
+
 def load(path: str | Path) -> Job:
     """Load a job YAML file."""
     with open(path) as f:
@@ -65,6 +94,7 @@ def load(path: str | Path) -> Job:
     resources = Resources(**res_data)
     job = Job(resources=resources, **data)
     job.envs = expand_envs(job.envs)
+    job.secrets = resolve_secrets(job.secrets)
     return job
 
 
