@@ -10,10 +10,11 @@ Endpoints:
 A background task polls all active jobs every POLL_INTERVAL seconds.
 
 Environment variables:
-  DATABASE_URL          Postgres connection string (required)
-  VASTLAUNCH_API_KEY    If set, all requests must supply  Authorization: Bearer <key>
-  VASTLAUNCH_SSH_KEY    Path to SSH private key (optional, uses vast.ai default otherwise)
-  POLL_INTERVAL         Seconds between polls (default: 120)
+  DATABASE_URL               Postgres connection string (required)
+  VASTLAUNCH_API_KEY         If set, all requests must supply  Authorization: Bearer <key>
+  VASTLAUNCH_SSH_KEY         Path to SSH private key file (optional)
+  VASTLAUNCH_SSH_KEY_CONTENT Raw SSH private key text (alternative to VASTLAUNCH_SSH_KEY)
+  POLL_INTERVAL              Seconds between polls (default: 120)
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import stat
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
@@ -40,6 +43,8 @@ logger = logging.getLogger("vastlaunch.server")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))
 _API_KEY = os.environ.get("VASTLAUNCH_API_KEY")
 _SSH_KEY = os.environ.get("VASTLAUNCH_SSH_KEY")
+_SSH_KEY_CONTENT = os.environ.get("VASTLAUNCH_SSH_KEY_CONTENT")
+_tmp_key_file: tempfile.NamedTemporaryFile | None = None
 
 _executor = ThreadPoolExecutor(max_workers=4)
 _bearer = HTTPBearer(auto_error=False)
@@ -64,11 +69,22 @@ def _check_auth(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _SSH_KEY, _tmp_key_file
+    if _SSH_KEY_CONTENT and not _SSH_KEY:
+        _tmp_key_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pem")
+        _tmp_key_file.write(_SSH_KEY_CONTENT.encode())
+        _tmp_key_file.flush()
+        _tmp_key_file.close()
+        os.chmod(_tmp_key_file.name, stat.S_IRUSR | stat.S_IWUSR)
+        _SSH_KEY = _tmp_key_file.name
+        logger.info("SSH key written to %s", _SSH_KEY)
     state.migrate()
     logger.info("DB migrated")
     task = asyncio.create_task(_poll_loop())
     yield
     task.cancel()
+    if _tmp_key_file:
+        os.unlink(_tmp_key_file.name)
 
 
 async def _poll_loop() -> None:
