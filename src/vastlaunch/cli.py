@@ -143,6 +143,20 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_blacklist(args: argparse.Namespace) -> int:
+    if args.action == "clear":
+        state.blacklist_clear()
+        print("blacklist cleared", file=sys.stderr)
+    else:  # list
+        ids = state.blacklist_get()
+        if not ids:
+            print("(blacklist is empty)")
+        else:
+            for oid in ids:
+                print(oid)
+    return 0
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     """Show top matching offers without launching anything."""
     job = _load_job(args, default_config=args.config)
@@ -247,6 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     pse.add_argument("--json", action="store_true")
     _add_resource_overrides(pse)
     pse.set_defaults(func=cmd_search)
+
+    # blacklist ---
+    pbl = sub.add_parser("blacklist", help="Manage the offer blacklist.")
+    pbl.add_argument("action", choices=["list", "clear"], nargs="?", default="list")
+    pbl.set_defaults(func=cmd_blacklist)
 
     return p
 

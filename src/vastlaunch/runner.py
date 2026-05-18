@@ -19,6 +19,14 @@ REMOTE_EXIT_CODE = f"{REMOTE_WORKDIR}/.exit_code"
 REMOTE_ENVRC = f"{REMOTE_WORKDIR}/.envrc"
 REMOTE_DONE_MARKER = f"{REMOTE_WORKDIR}/.vastlaunch_done"
 TMUX_SESSION = "vastlaunch"
+MAX_LAUNCH_ATTEMPTS = 3
+
+
+class _StartupFailed(Exception):
+    """Instance failed before SSH was available — safe to blacklist and retry."""
+    def __init__(self, offer_id: int, msg: str) -> None:
+        super().__init__(msg)
+        self.offer_id = offer_id
 
 
 def log(msg: str) -> None:
@@ -29,7 +37,7 @@ def log(msg: str) -> None:
 # offer selection
 # ---------------------------------------------------------------------------
 
-def find_offer(job: Job) -> dict:
+def find_offer(job: Job, skip_ids: set[int] | None = None) -> dict:
     query = vast.build_query(job.resources)
     log(f"searching offers: {query}")
     offers = vast.search_offers(query, limit=30)
@@ -40,6 +48,10 @@ def find_offer(job: Job) -> dict:
         offers = [o for o in offers if (o.get("dph_total") or 1e9) <= cap]
         if not offers:
             raise RuntimeError(f"no offers under ${cap:.3f}/hr")
+    if skip_ids:
+        offers = [o for o in offers if o.get("id") not in skip_ids]
+        if not offers:
+            raise RuntimeError("no offers remaining after excluding blacklisted hosts")
     chosen = offers[0]
     log(
         f"selected offer {chosen.get('id')}: "
@@ -142,6 +154,10 @@ def launch(
 
     detach=False (default): block, stream logs, optionally auto-destroy on completion.
     detach=True: start the job in a tmux session, return the instance ID.
+
+    On startup failure (instance goes offline/exited before SSH is ready), the
+    offer is blacklisted and the next cheapest offer is tried automatically, up
+    to MAX_LAUNCH_ATTEMPTS times. On any failure the instance is destroyed.
     """
     if dry_run:
         query = vast.build_query(job.resources)
@@ -152,12 +168,44 @@ def launch(
         log(f"DRY RUN — run script:\n{job.run}")
         return -1
 
-    offer = find_offer(job)
+    skip_ids: set[int] = set(state.blacklist_get())
+
+    for attempt in range(1, MAX_LAUNCH_ATTEMPTS + 1):
+        try:
+            return _attempt_launch(
+                job,
+                skip_ids=skip_ids,
+                detach=detach,
+                ssh_key=ssh_key,
+                extra_workdir=extra_workdir,
+            )
+        except _StartupFailed as e:
+            log(f"startup failed (attempt {attempt}/{MAX_LAUNCH_ATTEMPTS}): {e}")
+            log(f"blacklisting offer {e.offer_id}")
+            state.blacklist_add(e.offer_id)
+            skip_ids.add(e.offer_id)
+            if attempt == MAX_LAUNCH_ATTEMPTS:
+                raise RuntimeError(
+                    f"all {MAX_LAUNCH_ATTEMPTS} launch attempts failed"
+                ) from e
+            log("retrying with next available offer...")
+
+    raise RuntimeError("unreachable")
+
+
+def _attempt_launch(
+    job: Job,
+    *,
+    skip_ids: set[int],
+    detach: bool,
+    ssh_key: str | None,
+    extra_workdir: str | None,
+) -> int:
+    offer = find_offer(job, skip_ids=skip_ids)
     onstart = _onstart_script(job)
 
     bid = None
     if job.resources.use_spot:
-        # Default bid to max_price, or 1.1x the spot ask if not specified
         bid = job.resources.max_price or float(offer.get("min_bid", 0.0)) * 1.1
         log(f"spot bid: ${bid:.4f}/hr")
 
@@ -177,13 +225,28 @@ def launch(
     state.add(instance_id, name=job.name, config_path=str(workdir) if workdir else None)
 
     try:
-        info = wait_for_running(instance_id)
+        try:
+            info = wait_for_running(instance_id)
+        except (RuntimeError, TimeoutError) as e:
+            # Instance never became healthy — destroy it and signal retry
+            log(f"instance {instance_id} failed to start, destroying...")
+            vast.destroy_instance(instance_id)
+            state.remove(instance_id)
+            raise _StartupFailed(offer["id"], str(e)) from e
+
         host, port = vast.get_ssh_info(info)
         assert host and port
         state.update(instance_id, host=host, port=port, status="connecting")
         log(f"instance ready at {host}:{port}")
 
-        ssh.wait_for_ssh(host, port, key=ssh_key, timeout=300)
+        try:
+            ssh.wait_for_ssh(host, port, key=ssh_key, timeout=300)
+        except TimeoutError as e:
+            log(f"SSH never became ready on instance {instance_id}, destroying...")
+            vast.destroy_instance(instance_id)
+            state.remove(instance_id)
+            raise _StartupFailed(offer["id"], str(e)) from e
+
         log("SSH ready")
 
         if workdir is not None:
@@ -211,10 +274,13 @@ def launch(
             state.remove(instance_id)
         return instance_id
 
+    except _StartupFailed:
+        raise
     except Exception:
-        # Best-effort: mark failed but don't auto-destroy on errors during setup
-        # (user may want to ssh in and investigate)
         state.update(instance_id, status="failed")
+        log(f"error after launch, destroying instance {instance_id}...")
+        vast.destroy_instance(instance_id)
+        state.remove(instance_id)
         raise
 
 

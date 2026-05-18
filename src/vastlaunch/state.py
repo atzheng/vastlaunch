@@ -79,3 +79,34 @@ def all_jobs() -> dict[str, dict]:
 
 def log_path(instance_id: int | str) -> Path:
     return state_dir() / f"{instance_id}.log"
+
+
+# ---------------------------------------------------------------------------
+# offer blacklist
+# ---------------------------------------------------------------------------
+
+def _blacklist_path() -> Path:
+    return state_dir() / "blacklist.json"
+
+
+def blacklist_get() -> list[int]:
+    p = _blacklist_path()
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError:
+        return []
+
+
+def blacklist_add(offer_id: int) -> None:
+    ids = blacklist_get()
+    if offer_id not in ids:
+        ids.append(offer_id)
+        _blacklist_path().write_text(json.dumps(ids))
+
+
+def blacklist_clear() -> None:
+    p = _blacklist_path()
+    if p.exists():
+        p.unlink()
