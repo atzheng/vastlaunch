@@ -86,16 +86,26 @@ def resolve_secrets(secrets: dict) -> dict:
     return out
 
 
-def load(path: str | Path) -> Job:
-    """Load a job YAML file."""
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
+def _build_job(data: dict) -> Job:
     res_data = data.pop("resources", {}) or {}
     resources = Resources(**res_data)
     job = Job(resources=resources, **data)
     job.envs = expand_envs(job.envs)
     job.secrets = resolve_secrets(job.secrets)
     return job
+
+
+def load(path: str | Path) -> Job:
+    """Load a job YAML file."""
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return _build_job(data)
+
+
+def load_from_string(yaml_text: str) -> Job:
+    """Parse a job from a YAML string."""
+    data = yaml.safe_load(yaml_text) or {}
+    return _build_job(data)
 
 
 def apply_overrides(job: Job, overrides: dict[str, Any]) -> Job:

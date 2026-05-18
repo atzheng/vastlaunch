@@ -1,0 +1,7 @@
+# Patterns here are added to vastlaunch's rsync excludes.
+# Common defaults (.git, __pycache__, .venv, wandb, etc.) are already excluded.
+
+data/
+checkpoints/
+*.tar.gz
+.env.local

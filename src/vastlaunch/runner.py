@@ -9,6 +9,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import coolname
+
 from vastlaunch import ssh, state, vast
 from vastlaunch.config import Job
 
@@ -68,7 +70,7 @@ def find_offer(job: Job, skip_ids: set[int] | None = None) -> dict:
 # scripts injected on the remote
 # ---------------------------------------------------------------------------
 
-def _onstart_script(job: Job) -> str:
+def _onstart_script(job: Job, job_id: str) -> str:
     lines = [
         "#!/bin/bash",
         "set -e",
@@ -86,6 +88,7 @@ def _onstart_script(job: Job) -> str:
     for k, v in job.secrets.items():
         lines.append(f"export {k}={shlex.quote(str(v))}")
     lines.append(f"export VASTLAUNCH_JOB={shlex.quote(job.name)}")
+    lines.append(f"export VASTLAUNCH_JOB_ID={shlex.quote(job_id)}")
     lines.append("__VL_EOF__")
     lines.append(f"chmod 600 {REMOTE_ENVRC}")
     return "\n".join(lines)
@@ -246,7 +249,8 @@ def _attempt_launch(
     extra_workdir: str | None,
 ) -> int:
     offer = find_offer(job, skip_ids=skip_ids)
-    onstart = _onstart_script(job)
+    job_id = coolname.generate_slug()
+    onstart = _onstart_script(job, job_id)
 
     bid = None
     if job.resources.use_spot:
@@ -269,7 +273,8 @@ def _attempt_launch(
     log(f"instance {instance_id} created")
 
     workdir = Path(extra_workdir or job.workdir or ".").resolve() if (extra_workdir or job.workdir) else None
-    state.add(instance_id, name=job.name, config_path=str(workdir) if workdir else None)
+    state.add(instance_id, job_id=job_id, name=job.name, config_path=str(workdir) if workdir else None)
+    log(f"job ID: {job_id}")
 
     try:
         try:

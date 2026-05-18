@@ -1,0 +1,7 @@
+name: vastlaunch
+
+build:
+  buildCommand: pip install -e ".[server]"
+
+run:
+  startCommand: uvicorn vastlaunch.server.app:app --host 0.0.0.0 --port ${PORT:-8080}

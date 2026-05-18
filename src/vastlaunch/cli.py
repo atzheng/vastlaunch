@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from vastlaunch import config, runner, state, vast
+from vastlaunch import client, config, runner, state, vast
 
 
 def _add_resource_overrides(p: argparse.ArgumentParser) -> None:
@@ -56,6 +56,8 @@ def _load_job(args: argparse.Namespace, default_config: str | None = None) -> co
 # ---------------------------------------------------------------------------
 
 def cmd_launch(args: argparse.Namespace) -> int:
+    if client.server_url() and not args.dry_run:
+        return _server_submit(args)
     job = _load_job(args, default_config=args.config)
     instance_id = runner.launch(
         job,
@@ -67,10 +69,29 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
-    """Like launch --detach. Prints instance ID to stdout for orchestrators."""
+    """Like launch --detach. Prints job ID to stdout for orchestrators."""
+    if client.server_url():
+        return _server_submit(args)
     job = _load_job(args, default_config=args.config)
     instance_id = runner.launch(job, detach=True, ssh_key=args.ssh_key)
     print(instance_id)  # stdout for Snakemake
+    return 0
+
+
+def _server_submit(args: argparse.Namespace) -> int:
+    cfg_path = getattr(args, "config", None)
+    if cfg_path:
+        yaml_text = Path(cfg_path).read_text()
+    elif Path("vastlaunch.yaml").exists():
+        yaml_text = Path("vastlaunch.yaml").read_text()
+    elif Path("job.yaml").exists():
+        yaml_text = Path("job.yaml").read_text()
+    else:
+        print("[vastlaunch] no job config found", file=sys.stderr)
+        return 1
+    result = client.submit(yaml_text)
+    print(f"[vastlaunch] submitted: {result['job_id']} ({result['name']})", file=sys.stderr)
+    print(result["job_id"])
     return 0
 
 
@@ -96,13 +117,42 @@ def cmd_submit_script(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    s = runner.status(args.instance_id)
+    if client.server_url():
+        job = client.get_job(args.instance_id)
+        print(job.get("status", "?"))
+        return 0
+    s = runner.status(int(args.instance_id))
     print(s)
     return 0
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
-    return runner.stream_logs(args.instance_id, follow=args.follow, ssh_key=args.ssh_key)
+    if client.server_url():
+        if args.follow:
+            return _server_follow_logs(args.instance_id)
+        print(client.get_logs(args.instance_id))
+        return 0
+    return runner.stream_logs(int(args.instance_id), follow=args.follow, ssh_key=args.ssh_key)
+
+
+def _server_follow_logs(job_id: str) -> int:
+    import time
+    seen = 0
+    job: dict = {}
+    while True:
+        chunk = client.get_logs(job_id, since=seen)
+        if chunk:
+            print(chunk, end="", flush=True)
+            seen += chunk.count("\n")
+        job = client.get_job(job_id)
+        if job.get("status") in ("success", "failed", "stopped"):
+            # One final fetch to catch any output written right at exit
+            chunk = client.get_logs(job_id, since=seen)
+            if chunk:
+                print(chunk, end="", flush=True)
+            break
+        time.sleep(10)
+    return 0 if job.get("status") == "success" else 1
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
@@ -118,7 +168,10 @@ def cmd_ssh(args: argparse.Namespace) -> int:
 def cmd_destroy(args: argparse.Namespace) -> int:
     for iid in args.instance_ids:
         print(f"destroying {iid}", file=sys.stderr)
-        runner.destroy(int(iid))
+        if client.server_url():
+            client.destroy_job(iid)
+        else:
+            runner.destroy(int(iid))
     return 0
 
 
@@ -129,6 +182,18 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    if client.server_url():
+        jobs = client.list_jobs()
+        if args.json:
+            print(json.dumps(jobs, indent=2))
+            return 0
+        if not jobs:
+            print("(no jobs)")
+            return 0
+        print(f"{'JOB ID':<30} {'STATUS':<12} {'NAME'}")
+        for job in jobs:
+            print(f"{job.get('job_id', '?'):<30} {job.get('status', '?'):<12} {job.get('name', '?')}")
+        return 0
     jobs = state.all_jobs()
     if args.json:
         print(json.dumps(jobs, indent=2))
@@ -216,12 +281,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # status ---
     pst = sub.add_parser("status", help="Print one of: pending|running|success|failed.")
-    pst.add_argument("instance_id", type=int)
+    pst.add_argument("instance_id", help="Instance ID (direct) or job ID (server mode)")
     pst.set_defaults(func=cmd_status)
 
     # logs ---
     pll = sub.add_parser("logs", help="Stream remote run log.")
-    pll.add_argument("instance_id", type=int)
+    pll.add_argument("instance_id", help="Instance ID (direct) or job ID (server mode)")
     pll.add_argument("-f", "--follow", action="store_true")
     pll.add_argument("--ssh-key")
     pll.set_defaults(func=cmd_logs)
