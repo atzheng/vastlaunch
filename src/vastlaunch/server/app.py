@@ -128,6 +128,8 @@ async def submit_job(request: Request) -> dict:
 
 @app.get("/jobs", dependencies=[Depends(_check_auth)])
 async def list_jobs() -> list[dict]:
+    loop = asyncio.get_event_loop()
+    asyncio.ensure_future(loop.run_in_executor(_executor, poller.poll_all))
     return list(state.all_jobs().values())
 
 
