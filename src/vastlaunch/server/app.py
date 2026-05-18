@@ -71,14 +71,16 @@ def _check_auth(
 async def lifespan(app: FastAPI):
     global _SSH_KEY, _tmp_key_file
     if _SSH_KEY_CONTENT and not _SSH_KEY:
+        logger.info("SSH key content repr (first 120 chars): %r", _SSH_KEY_CONTENT[:120])
+        key_text = _SSH_KEY_CONTENT.replace("\\n", "\n").strip() + "\n"
         _tmp_key_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pem")
-        _tmp_key_file.write(_SSH_KEY_CONTENT.replace("\\n", "\n").encode())
+        _tmp_key_file.write(key_text.encode())
         _tmp_key_file.flush()
         _tmp_key_file.close()
         os.chmod(_tmp_key_file.name, stat.S_IRUSR | stat.S_IWUSR)
         _SSH_KEY = _tmp_key_file.name
         poller._SSH_KEY = _SSH_KEY
-        logger.info("SSH key written to %s", _SSH_KEY)
+        logger.info("SSH key written to %s (%d lines)", _SSH_KEY, key_text.count("\n"))
     state.migrate()
     logger.info("DB migrated")
     task = asyncio.create_task(_poll_loop())
