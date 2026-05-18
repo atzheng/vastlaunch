@@ -77,6 +77,7 @@ async def lifespan(app: FastAPI):
         _tmp_key_file.close()
         os.chmod(_tmp_key_file.name, stat.S_IRUSR | stat.S_IWUSR)
         _SSH_KEY = _tmp_key_file.name
+        poller._SSH_KEY = _SSH_KEY
         logger.info("SSH key written to %s", _SSH_KEY)
     state.migrate()
     logger.info("DB migrated")
