@@ -11,6 +11,10 @@ HTML = """<!DOCTYPE html>
     --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
     --text: #e1e4e8; --muted: #6b7280; --accent: #4a9eff;
   }
+  body.light-mode {
+    --bg: #f6f8fa; --surface: #ffffff; --border: #d0d7de;
+    --text: #24292f; --muted: #656d76; --accent: #0969da;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: ui-monospace, 'Cascadia Code', 'SF Mono', monospace; font-size: 13px; }
 
@@ -22,6 +26,8 @@ HTML = """<!DOCTYPE html>
   #search { width: 220px; }
   .refresh-info { margin-left: auto; color: var(--muted); font-size: 11px; cursor: pointer; }
   .refresh-info:hover { color: var(--text); }
+  .theme-toggle { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1; }
+  .theme-toggle:hover { border-color: #6b7280; color: var(--text); }
 
   table { width: 100%; border-collapse: collapse; }
   th { padding: 9px 16px; text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; white-space: nowrap; }
@@ -40,12 +46,22 @@ HTML = """<!DOCTYPE html>
   .badge-failed     { background: #2d1515; color: #f87171; }
   .badge-stopped    { background: #2a2d3a; color: #9ca3af; }
 
+  body.light-mode .badge-queued     { background: #eaeef2; color: #57606a; }
+  body.light-mode .badge-launching  { background: #ddf4ff; color: #0550ae; }
+  body.light-mode .badge-connecting { background: #fff8c5; color: #7d4e00; }
+  body.light-mode .badge-running    { background: #dafbe1; color: #116329; }
+  body.light-mode .badge-success    { background: #dafbe1; color: #116329; }
+  body.light-mode .badge-failed     { background: #ffebe9; color: #cf222e; }
+  body.light-mode .badge-stopped    { background: #eaeef2; color: #57606a; }
+
   .job-id { font-weight: 500; color: var(--accent); }
   .muted  { color: var(--muted); }
 
   .btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 3px 10px; border-radius: 3px; cursor: pointer; font-family: inherit; font-size: 11px; }
   .btn:hover { color: var(--text); border-color: #6b7280; }
   .btn-danger:hover { color: #f87171; border-color: #f87171; }
+  .btn-delete { padding: 3px 7px; }
+  .btn-delete:hover { color: #f87171; border-color: #f87171; }
   .actions { display: flex; gap: 6px; }
 
   .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -54,6 +70,7 @@ HTML = """<!DOCTYPE html>
   .modal-header h2 { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .modal-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
   pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; line-height: 1.6; color: #c9d1d9; }
+  body.light-mode pre { color: #24292f; }
   .close-btn { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; flex-shrink: 0; }
   .close-btn:hover { color: var(--text); }
 
@@ -82,13 +99,13 @@ HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<div id="logs-modal" class="overlay hidden">
+<div id="content-modal" class="overlay hidden">
   <div class="modal">
     <div class="modal-header">
       <h2 id="modal-title">Logs</h2>
-      <button class="close-btn" onclick="closeLogs()">&#x2715;</button>
+      <button class="close-btn" onclick="closeModal()">&#x2715;</button>
     </div>
-    <div class="modal-body"><pre id="logs-content">Loading&#x2026;</pre></div>
+    <div class="modal-body"><pre id="modal-content">Loading&#x2026;</pre></div>
   </div>
 </div>
 
@@ -103,6 +120,7 @@ HTML = """<!DOCTYPE html>
     </select>
     <span class="refresh-info" id="refresh-info" onclick="fetchJobs()" title="Click to refresh now">&#x2014;</span>
   </div>
+  <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode"></button>
 </header>
 
 <table>
@@ -129,6 +147,27 @@ const authHeaders = () => {
   const k = apiKey();
   return k ? { 'Authorization': 'Bearer ' + k } : {};
 };
+
+// ---------------------------------------------------------------------------
+// theme
+// ---------------------------------------------------------------------------
+
+function toggleTheme() {
+  const isLight = document.body.classList.toggle('light-mode');
+  localStorage.setItem('vastlaunch_theme', isLight ? 'light' : 'dark');
+  document.getElementById('theme-toggle').textContent = isLight ? '\u263d' : '\u2600';
+}
+
+(function initTheme() {
+  const saved = localStorage.getItem('vastlaunch_theme');
+  const isLight = saved === 'light';
+  if (isLight) document.body.classList.add('light-mode');
+  document.getElementById('theme-toggle').textContent = isLight ? '\u263d' : '\u2600';
+})();
+
+// ---------------------------------------------------------------------------
+// data
+// ---------------------------------------------------------------------------
 
 async function fetchJobs() {
   clearTimeout(refreshTimer); clearInterval(countdownInterval);
@@ -171,7 +210,8 @@ function renderTable() {
     return;
   }
   tbody.innerHTML = jobs.map(j => {
-    const canLog = !!(j.host && j.port);
+    const canLog    = !!(j.host && j.port);
+    const canConfig = !!(j.config_yaml);
     const canDestroy = !TERMINAL.has(j.status);
     const id = esc(j.job_id);
     return `<tr>
@@ -183,7 +223,9 @@ function renderTable() {
       <td class="muted">${rel(j.updated_at)}</td>
       <td><div class="actions">
         ${canLog    ? `<button class="btn" onclick="showLogs('${id}')">Logs</button>` : ''}
+        ${canConfig ? `<button class="btn" onclick="showConfig('${id}')">Config</button>` : ''}
         ${canDestroy? `<button class="btn btn-danger" onclick="destroyJob('${id}')">Destroy</button>` : ''}
+        <button class="btn btn-delete" onclick="deleteJob('${id}')" title="Permanently delete entry and clean up R2">\u{1F5D1}</button>
       </div></td>
     </tr>`;
   }).join('');
@@ -209,30 +251,58 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ---------------------------------------------------------------------------
+// modal
+// ---------------------------------------------------------------------------
+
+function openModal(title, content) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-content').textContent = content;
+  document.getElementById('content-modal').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('content-modal').classList.add('hidden');
+}
+
 async function showLogs(jobId) {
-  document.getElementById('modal-title').textContent = 'Logs \u2014 ' + jobId;
-  document.getElementById('logs-content').textContent = 'Loading\u2026';
-  document.getElementById('logs-modal').classList.remove('hidden');
+  openModal('Logs \u2014 ' + jobId, 'Loading\u2026');
   try {
     const r = await fetch(`/jobs/${jobId}/logs?n=500`, { headers: authHeaders() });
     const data = await r.json();
-    const pre = document.getElementById('logs-content');
+    const pre = document.getElementById('modal-content');
     pre.textContent = data.logs || '(no output yet)';
     pre.scrollTop = pre.scrollHeight;
   } catch(e) {
-    document.getElementById('logs-content').textContent = 'Failed to fetch logs.';
+    document.getElementById('modal-content').textContent = 'Failed to fetch logs.';
   }
 }
 
-function closeLogs() {
-  document.getElementById('logs-modal').classList.add('hidden');
+function showConfig(jobId) {
+  const job = allJobs.find(j => j.job_id === jobId);
+  const yaml = (job && job.config_yaml) || '(not available)';
+  openModal('Config \u2014 ' + jobId, yaml);
 }
+
+// ---------------------------------------------------------------------------
+// actions
+// ---------------------------------------------------------------------------
 
 async function destroyJob(jobId) {
   if (!confirm('Destroy job ' + jobId + '?')) return;
   await fetch(`/jobs/${jobId}`, { method: 'DELETE', headers: authHeaders() });
   fetchJobs();
 }
+
+async function deleteJob(jobId) {
+  if (!confirm('Permanently delete job ' + jobId + ' and clean up any uploaded code in R2?')) return;
+  await fetch(`/jobs/${jobId}?purge=true`, { method: 'DELETE', headers: authHeaders() });
+  fetchJobs();
+}
+
+// ---------------------------------------------------------------------------
+// refresh
+// ---------------------------------------------------------------------------
 
 function scheduleRefresh() {
   clearTimeout(refreshTimer); clearInterval(countdownInterval);
@@ -245,6 +315,10 @@ function scheduleRefresh() {
   }, 1000);
   refreshTimer = setTimeout(fetchJobs, REFRESH_SECS * 1000);
 }
+
+// ---------------------------------------------------------------------------
+// auth
+// ---------------------------------------------------------------------------
 
 function showAuth() {
   document.getElementById('auth-overlay').classList.remove('hidden');
@@ -266,7 +340,7 @@ async function submitKey() {
 }
 
 document.getElementById('key-input').addEventListener('keydown', e => { if (e.key === 'Enter') submitKey(); });
-document.getElementById('logs-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeLogs(); });
+document.getElementById('content-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 
 fetchJobs();
 </script>

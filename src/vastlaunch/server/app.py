@@ -201,7 +201,7 @@ async def get_logs(job_id: str, n: int = 200, since: int = 0) -> dict:
 
 
 @app.delete("/jobs/{job_id}", status_code=204, dependencies=[Depends(_check_auth)])
-async def destroy_job(job_id: str) -> Response:
+async def destroy_job(job_id: str, purge: bool = False) -> Response:
     job = state.get_by_job_id(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
@@ -214,5 +214,15 @@ async def destroy_job(job_id: str) -> Response:
             )
         except vast.VastError as e:
             logger.warning("destroy instance %s failed: %s", instance_id, e)
-    state.update_by_job_id(job_id, status="failed")
+    if purge:
+        workdir_key = job.get("workdir_key")
+        if workdir_key:
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(_executor, lambda: r2.delete(workdir_key))
+            except Exception as e:
+                logger.warning("R2 delete %s failed: %s", workdir_key, e)
+        state.remove_by_job_id(job_id)
+    else:
+        state.update_by_job_id(job_id, status="failed")
     return Response(status_code=204)

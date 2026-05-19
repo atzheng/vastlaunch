@@ -203,6 +203,12 @@ def remove(instance_id: int | str) -> None:
         conn.commit()
 
 
+def remove_by_job_id(job_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM jobs WHERE job_id = %s", (job_id,))
+        conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # offer blacklist
 # ---------------------------------------------------------------------------
