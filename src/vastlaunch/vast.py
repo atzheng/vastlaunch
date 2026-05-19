@@ -3,9 +3,41 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from typing import Any
+
+_VAST_API_BASE = "https://console.vast.ai/api/v0"
+
+
+def _api_key() -> str | None:
+    """Return the vast.ai API key from env or the vastai config file."""
+    key = os.environ.get("VAST_API_KEY")
+    if key:
+        return key
+    # vastai stores the key in ~/.config/vastai/vast_api_key on Linux
+    cfg = os.path.expanduser("~/.config/vastai/vast_api_key")
+    if os.path.exists(cfg):
+        return open(cfg).read().strip()
+    return None
+
+
+def _api_get(path: str) -> Any:
+    key = _api_key()
+    if not key:
+        raise VastError("no vast.ai API key — set VAST_API_KEY or run `vastai set api-key`")
+    sep = "&" if "?" in path else "?"
+    url = f"{_VAST_API_BASE}{path}{sep}api_key={key}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise VastError(f"vast.ai API {path} returned HTTP {e.code}") from e
+    except Exception as e:
+        raise VastError(f"vast.ai API {path} failed: {e}") from e
 
 from vastlaunch.config import Resources, parse_accelerator
 
@@ -133,11 +165,20 @@ def create_instance(
 
 
 def show_instance(instance_id: int | str) -> dict:
-    out = _run(["show", "instance", str(instance_id), "--raw"])
-    data = _parse_json(out)
+    """Fetch instance info via REST API (avoids vastai CLI bugs with null start_date)."""
+    data = _api_get(f"/instances/{instance_id}/")
     if not isinstance(data, dict):
         raise VastError(f"unexpected show-instance response: {data}")
-    return data
+    # The API wraps the instance under an "instances" key as a single-item dict
+    instances = data.get("instances")
+    if isinstance(instances, dict):
+        # keyed by instance id — grab the first (only) value
+        inner = next(iter(instances.values()), None)
+        if isinstance(inner, dict):
+            return inner
+    if "actual_status" in data or "id" in data:
+        return data
+    raise VastError(f"unexpected show-instance response shape: {data}")
 
 
 def list_instances() -> list[dict]:

@@ -16,6 +16,7 @@ Environment variables:
   VASTLAUNCH_SSH_KEY         Path to SSH private key file (optional)
   VASTLAUNCH_SSH_KEY_CONTENT Raw SSH private key text (alternative to VASTLAUNCH_SSH_KEY)
   POLL_INTERVAL              Seconds between polls (default: 120)
+  VAST_API_KEY               vast.ai API key (alternative to vastai set api-key)
   R2_ACCOUNT_ID              Cloudflare account ID (required for workdir upload)
   R2_ACCESS_KEY_ID           R2 API token access key ID
   R2_SECRET_ACCESS_KEY       R2 API token secret
