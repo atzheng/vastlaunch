@@ -17,7 +17,12 @@ def server_url() -> str | None:
     return os.environ.get("VASTLAUNCH_SERVER_URL")
 
 
-def _request(method: str, path: str, body: bytes | None = None) -> dict | list | None:
+def _request(
+    method: str,
+    path: str,
+    body: bytes | None = None,
+    content_type: str = "text/plain",
+) -> dict | list | None:
     base = (server_url() or "").rstrip("/")
     url = base + path
     api_key = os.environ.get("VASTLAUNCH_API_KEY")
@@ -25,7 +30,7 @@ def _request(method: str, path: str, body: bytes | None = None) -> dict | list |
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     if body is not None:
-        headers["Content-Type"] = "text/plain"
+        headers["Content-Type"] = content_type
     req = urllib.request.Request(url, method=method, headers=headers, data=body)
     try:
         with urllib.request.urlopen(req) as resp:
@@ -57,6 +62,11 @@ def get_logs(job_id: str, n: int = 200, since: int = 0) -> str:
     params = f"since={since}" if since > 0 else f"n={n}"
     data = _request("GET", f"/jobs/{job_id}/logs?{params}") or {}
     return data.get("logs", "")  # type: ignore[union-attr]
+
+
+def upload_workdir(job_id: str, data: bytes) -> None:
+    """PUT a gzipped tar of the workdir for a job."""
+    _request("PUT", f"/jobs/{job_id}/workdir", data, content_type="application/octet-stream")
 
 
 def destroy_job(job_id: str) -> None:

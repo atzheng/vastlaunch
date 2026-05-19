@@ -24,6 +24,7 @@ from psycopg.rows import dict_row
 
 _UPDATABLE_FIELDS = frozenset({
     "instance_id", "host", "port", "status", "exit_code", "config_path", "logs",
+    "workdir_key",
 })
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "stopped"})
@@ -55,6 +56,7 @@ def migrate() -> None:
                 name          TEXT NOT NULL,
                 config_yaml   TEXT,
                 config_path   TEXT,
+                workdir_key   TEXT,
                 host          TEXT,
                 port          INTEGER,
                 status        TEXT NOT NULL DEFAULT 'queued',
@@ -63,6 +65,9 @@ def migrate() -> None:
                 started_at    DOUBLE PRECISION,
                 updated_at    DOUBLE PRECISION
             )
+        """)
+        conn.execute("""
+            ALTER TABLE jobs ADD COLUMN IF NOT EXISTS workdir_key TEXT
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS offer_blacklist (

@@ -13,13 +13,17 @@ State transitions:
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 
 from vastlaunch import config, ssh, state, vast
+from vastlaunch.server import r2
 from vastlaunch.runner import (
     REMOTE_EXIT_CODE,
     REMOTE_LOG,
@@ -174,14 +178,34 @@ def _check_connecting(job: dict) -> None:
     if job_config is None:
         return
 
-    config_path = job.get("config_path")
-    if config_path and Path(config_path).exists():
+    workdir_key = job.get("workdir_key")
+    if workdir_key:
         try:
-            _sync_workdir(host, port, Path(config_path), ssh_key=_SSH_KEY)
+            data = r2.download(workdir_key)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+                    tf.extractall(tmpdir)
+                _sync_workdir(host, port, Path(tmpdir), ssh_key=_SSH_KEY)
         except Exception as e:
-            log(f"{job_id}: rsync failed — {e}")
+            log(f"{job_id}: workdir download/rsync failed — {e}")
             _destroy_and_fail(job)
             return
+    else:
+        config_path = job.get("config_path")
+        if config_path:
+            workdir = Path(config_path)
+        elif job_config.workdir:
+            workdir = Path(job_config.workdir).resolve()
+        else:
+            workdir = None
+
+        if workdir and workdir.exists():
+            try:
+                _sync_workdir(host, port, workdir, ssh_key=_SSH_KEY)
+            except Exception as e:
+                log(f"{job_id}: rsync failed — {e}")
+                _destroy_and_fail(job)
+                return
 
     try:
         _push_run_script(host, port, job_config, ssh_key=_SSH_KEY)

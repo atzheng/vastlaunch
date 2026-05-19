@@ -1,11 +1,12 @@
 """FastAPI server for vastlaunch.
 
 Endpoints:
-  POST   /jobs               Submit a job (YAML body)
-  GET    /jobs               List all jobs
-  GET    /jobs/{job_id}      Get a single job
-  GET    /jobs/{job_id}/logs Tail the remote run log
-  DELETE /jobs/{job_id}      Destroy a job
+  POST   /jobs                    Submit a job (YAML body)
+  PUT    /jobs/{job_id}/workdir   Upload workdir tarball (application/octet-stream)
+  GET    /jobs                    List all jobs
+  GET    /jobs/{job_id}           Get a single job
+  GET    /jobs/{job_id}/logs      Tail the remote run log
+  DELETE /jobs/{job_id}           Destroy a job
 
 A background task polls all active jobs every POLL_INTERVAL seconds.
 
@@ -15,6 +16,10 @@ Environment variables:
   VASTLAUNCH_SSH_KEY         Path to SSH private key file (optional)
   VASTLAUNCH_SSH_KEY_CONTENT Raw SSH private key text (alternative to VASTLAUNCH_SSH_KEY)
   POLL_INTERVAL              Seconds between polls (default: 120)
+  R2_ACCOUNT_ID              Cloudflare account ID (required for workdir upload)
+  R2_ACCESS_KEY_ID           R2 API token access key ID
+  R2_SECRET_ACCESS_KEY       R2 API token secret
+  R2_BUCKET                  R2 bucket name
 """
 
 from __future__ import annotations
@@ -36,7 +41,7 @@ from vastlaunch.server.ui import HTML
 
 from vastlaunch import config, ssh, state, vast
 from vastlaunch.runner import REMOTE_LOG
-from vastlaunch.server import poller
+from vastlaunch.server import poller, r2
 
 logger = logging.getLogger("vastlaunch.server")
 
@@ -127,6 +132,20 @@ async def submit_job(request: Request) -> dict:
     state.enqueue(job_id=job_id, name=job_config.name, config_yaml=yaml_text)
     logger.info("enqueued job %s (%s)\n%s", job_id, job_config.name, yaml_text.strip())
     return {"job_id": job_id, "name": job_config.name, "status": "queued"}
+
+
+@app.put("/jobs/{job_id}/workdir", status_code=204, dependencies=[Depends(_check_auth)])
+async def upload_workdir(job_id: str, request: Request) -> Response:
+    """Upload a gzipped tar of the workdir. Stored in R2; fetched by the poller before rsync."""
+    job = state.get_by_job_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    data = await request.body()
+    key = f"workdir/{job_id}.tar.gz"
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_executor, lambda: r2.upload(key, data))
+    state.update_by_job_id(job_id, workdir_key=key)
+    return Response(status_code=204)
 
 
 @app.get("/jobs", dependencies=[Depends(_check_auth)])

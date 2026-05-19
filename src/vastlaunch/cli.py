@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import io
 import json
 import os
 import sys
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +81,38 @@ def cmd_submit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _make_workdir_tarball(workdir: Path) -> bytes:
+    """Create a gzipped tar of workdir, honouring DEFAULT_EXCLUDES and .vastignore."""
+    from vastlaunch.ssh import DEFAULT_EXCLUDES  # avoid circular at module level
+
+    excludes = list(DEFAULT_EXCLUDES)
+    vastignore = workdir / ".vastignore"
+    if vastignore.exists():
+        excludes.extend(
+            line.strip() for line in vastignore.read_text().splitlines()
+            if line.strip() and not line.startswith("#")
+        )
+
+    def _filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        # info.name is relative to the arcname root (e.g. "./src/foo.py")
+        rel = info.name.lstrip("./")
+        if not rel:
+            return info
+        parts = Path(rel).parts
+        for pat in excludes:
+            pat_clean = pat.rstrip("/")
+            if any(fnmatch.fnmatch(p, pat_clean) for p in parts):
+                return None
+            if fnmatch.fnmatch(rel, pat_clean):
+                return None
+        return info
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        tf.add(str(workdir), arcname=".", filter=_filter)
+    return buf.getvalue()
+
+
 def _server_submit(args: argparse.Namespace) -> int:
     cfg_path = getattr(args, "config", None)
     if cfg_path:
@@ -93,8 +128,19 @@ def _server_submit(args: argparse.Namespace) -> int:
     # This raises if any required secret is missing from the local environment.
     yaml_text = config.resolve_secrets_in_yaml(yaml_text)
     result = client.submit(yaml_text)
-    print(f"[vastlaunch] submitted: {result['job_id']} ({result['name']})", file=sys.stderr)
-    print(result["job_id"])
+    job_id = result["job_id"]
+    print(f"[vastlaunch] submitted: {job_id} ({result['name']})", file=sys.stderr)
+
+    job_cfg = config.load_from_string(yaml_text)
+    if job_cfg.workdir:
+        workdir = Path(job_cfg.workdir).resolve()
+        if workdir.exists():
+            print(f"[vastlaunch] uploading workdir {workdir} ...", file=sys.stderr)
+            tarball = _make_workdir_tarball(workdir)
+            client.upload_workdir(job_id, tarball)
+            print(f"[vastlaunch] workdir uploaded ({len(tarball):,} bytes)", file=sys.stderr)
+
+    print(job_id)
     return 0
 
 
