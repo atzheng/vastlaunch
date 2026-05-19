@@ -200,6 +200,15 @@ async def get_logs(job_id: str, n: int = 200, since: int = 0) -> dict:
     return {"job_id": job_id, "logs": out}
 
 
+@app.get("/jobs/{job_id}/poller-logs", dependencies=[Depends(_check_auth)])
+async def get_poller_logs(job_id: str) -> dict:
+    """Return the startup/poller log for a job (pre-run state machine messages)."""
+    job = state.get_by_job_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"job_id": job_id, "logs": job.get("poller_log") or ""}
+
+
 @app.delete("/jobs/{job_id}", status_code=204, dependencies=[Depends(_check_auth)])
 async def destroy_job(job_id: str, purge: bool = False) -> Response:
     job = state.get_by_job_id(job_id)

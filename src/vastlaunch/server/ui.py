@@ -210,8 +210,9 @@ function renderTable() {
     return;
   }
   tbody.innerHTML = jobs.map(j => {
-    const canLog    = !!(j.host && j.port);
-    const canConfig = !!(j.config_yaml);
+    const canLog     = !!(j.host && j.port) || TERMINAL.has(j.status);
+    const canStartup = !!(j.config_yaml);
+    const canConfig  = !!(j.config_yaml);
     const canDestroy = !TERMINAL.has(j.status);
     const id = esc(j.job_id);
     return `<tr>
@@ -222,9 +223,10 @@ function renderTable() {
       <td class="muted">${rel(j.started_at)}</td>
       <td class="muted">${rel(j.updated_at)}</td>
       <td><div class="actions">
-        ${canLog    ? `<button class="btn" onclick="showLogs('${id}')">Logs</button>` : ''}
-        ${canConfig ? `<button class="btn" onclick="showConfig('${id}')">Config</button>` : ''}
-        ${canDestroy? `<button class="btn btn-danger" onclick="destroyJob('${id}')">Destroy</button>` : ''}
+        ${canStartup ? `<button class="btn" onclick="showStartupLogs('${id}')">Startup</button>` : ''}
+        ${canLog     ? `<button class="btn" onclick="showLogs('${id}')">Logs</button>` : ''}
+        ${canConfig  ? `<button class="btn" onclick="showConfig('${id}')">Config</button>` : ''}
+        ${canDestroy ? `<button class="btn btn-danger" onclick="destroyJob('${id}')">Destroy</button>` : ''}
         <button class="btn btn-delete" onclick="deleteJob('${id}')" title="Permanently delete entry and clean up R2">&#x1F5D1;</button>
       </div></td>
     </tr>`;
@@ -263,6 +265,19 @@ function openModal(title, content) {
 
 function closeModal() {
   document.getElementById('content-modal').classList.add('hidden');
+}
+
+async function showStartupLogs(jobId) {
+  openModal('Startup log \u2014 ' + jobId, 'Loading\u2026');
+  try {
+    const r = await fetch(`/jobs/${jobId}/poller-logs`, { headers: authHeaders() });
+    const data = await r.json();
+    const pre = document.getElementById('modal-content');
+    pre.textContent = data.logs || '(no startup log yet)';
+    pre.scrollTop = pre.scrollHeight;
+  } catch(e) {
+    document.getElementById('modal-content').textContent = 'Failed to fetch startup log.';
+  }
 }
 
 async function showLogs(jobId) {

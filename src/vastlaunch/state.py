@@ -24,7 +24,7 @@ from psycopg.rows import dict_row
 
 _UPDATABLE_FIELDS = frozenset({
     "instance_id", "host", "port", "status", "exit_code", "config_path", "logs",
-    "workdir_key",
+    "workdir_key", "poller_log",
 })
 
 _TERMINAL_STATUSES = frozenset({"success", "failed", "stopped"})
@@ -68,6 +68,9 @@ def migrate() -> None:
         """)
         conn.execute("""
             ALTER TABLE jobs ADD COLUMN IF NOT EXISTS workdir_key TEXT
+        """)
+        conn.execute("""
+            ALTER TABLE jobs ADD COLUMN IF NOT EXISTS poller_log TEXT
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS offer_blacklist (
@@ -173,6 +176,16 @@ def all_active_jobs() -> list[dict]:
 # ---------------------------------------------------------------------------
 # updates
 # ---------------------------------------------------------------------------
+
+def append_poller_log(job_id: str, text: str) -> None:
+    """Append text to the per-job poller log. Thread-safe via DB serialization."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET poller_log = COALESCE(poller_log, '') || %s WHERE job_id = %s",
+            (text, job_id),
+        )
+        conn.commit()
+
 
 def _do_update(where_col: str, where_val: Any, **fields: Any) -> None:
     invalid = set(fields) - _UPDATABLE_FIELDS
