@@ -172,7 +172,10 @@ def show_instance(instance_id: int | str) -> dict:
     # The API wraps the instance under an "instances" key as a single-item dict
     instances = data.get("instances")
     if isinstance(instances, dict):
-        # keyed by instance id — grab the first (only) value
+        # Sometimes the API returns the instance dict directly under "instances"
+        if "actual_status" in instances or "id" in instances:
+            return instances
+        # Otherwise it's keyed by instance id — grab the first (only) value
         inner = next(iter(instances.values()), None)
         if isinstance(inner, dict):
             return inner
