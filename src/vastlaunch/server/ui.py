@@ -225,7 +225,7 @@ function renderTable() {
         ${canLog    ? `<button class="btn" onclick="showLogs('${id}')">Logs</button>` : ''}
         ${canConfig ? `<button class="btn" onclick="showConfig('${id}')">Config</button>` : ''}
         ${canDestroy? `<button class="btn btn-danger" onclick="destroyJob('${id}')">Destroy</button>` : ''}
-        <button class="btn btn-delete" onclick="deleteJob('${id}')" title="Permanently delete entry and clean up R2">\u{1F5D1}</button>
+        <button class="btn btn-delete" onclick="deleteJob('${id}')" title="Permanently delete entry and clean up R2">&#x1F5D1;</button>
       </div></td>
     </tr>`;
   }).join('');
