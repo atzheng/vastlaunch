@@ -12,6 +12,7 @@ dependencies = [
   "pyyaml>=6.0",
   "vastai>=0.2",
   "coolname>=2.2",
+  "rich>=13.0",
 ]
 
 [project.optional-dependencies]
