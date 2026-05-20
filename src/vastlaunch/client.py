@@ -71,3 +71,22 @@ def upload_workdir(job_id: str, data: bytes) -> None:
 
 def destroy_job(job_id: str) -> None:
     _request("DELETE", f"/jobs/{job_id}")
+
+
+def resolve_job_id(partial: str) -> str:
+    """Resolve a partial job ID to a full job ID.
+
+    If *partial* exactly matches a job_id, returns it unchanged.
+    Otherwise searches all jobs for those whose job_id contains *partial*
+    (case-insensitive) and returns the most recently submitted match.
+    Raises RuntimeError if no match is found.
+    """
+    jobs = list_jobs()
+    # Exact match — skip the list scan
+    if any(j.get("job_id") == partial for j in jobs):
+        return partial
+    # Substring match; list is newest-first (started_at DESC)
+    matches = [j for j in jobs if partial.lower() in (j.get("job_id") or "").lower()]
+    if not matches:
+        raise RuntimeError(f"no job matching {partial!r}")
+    return matches[0]["job_id"]

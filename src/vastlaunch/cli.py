@@ -167,7 +167,8 @@ def cmd_submit_script(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     if client.server_url():
-        job = client.get_job(args.instance_id)
+        job_id = client.resolve_job_id(args.instance_id)
+        job = client.get_job(job_id)
         print(job.get("status", "?"))
         return 0
     s = runner.status(int(args.instance_id))
@@ -177,9 +178,10 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_logs(args: argparse.Namespace) -> int:
     if client.server_url():
+        job_id = client.resolve_job_id(args.instance_id)
         if args.follow:
-            return _server_follow_logs(args.instance_id)
-        print(client.get_logs(args.instance_id))
+            return _server_follow_logs(job_id)
+        print(client.get_logs(job_id))
         return 0
     return runner.stream_logs(int(args.instance_id), follow=args.follow, ssh_key=args.ssh_key)
 
@@ -216,6 +218,8 @@ def cmd_ssh(args: argparse.Namespace) -> int:
 
 def cmd_destroy(args: argparse.Namespace) -> int:
     for iid in args.instance_ids:
+        if client.server_url():
+            iid = client.resolve_job_id(iid)
         print(f"destroying {iid}", file=sys.stderr)
         if client.server_url():
             client.destroy_job(iid)
