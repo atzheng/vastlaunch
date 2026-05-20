@@ -1,42 +1,31 @@
-"""Cloudflare R2 helpers (S3-compatible API via boto3).
+"""Local-disk storage for vastlaunch workdir tarballs.
 
-Required environment variables:
-  R2_ACCOUNT_ID        — Cloudflare account ID
-  R2_ACCESS_KEY_ID     — R2 API token access key ID
-  R2_SECRET_ACCESS_KEY — R2 API token secret
-  R2_BUCKET            — bucket name
+Files are stored under WORKDIR_STORE (default: workdir_store/).
+The interface mirrors the old R2 module so the rest of the app is unchanged.
 """
 
 from __future__ import annotations
 
 import os
-
-import boto3
-
-
-def _client():
-    account_id = os.environ["R2_ACCOUNT_ID"]
-    return boto3.client(
-        "s3",
-        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
-        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-        region_name="auto",
-    )
+from pathlib import Path
 
 
-def _bucket() -> str:
-    return os.environ["R2_BUCKET"]
+def _store_dir() -> Path:
+    d = Path(os.environ.get("WORKDIR_STORE", "workdir_store"))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def upload(key: str, data: bytes) -> None:
-    _client().put_object(Bucket=_bucket(), Key=key, Body=data)
+    path = _store_dir() / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
 
 
 def download(key: str) -> bytes:
-    resp = _client().get_object(Bucket=_bucket(), Key=key)
-    return resp["Body"].read()
+    return (_store_dir() / key).read_bytes()
 
 
 def delete(key: str) -> None:
-    _client().delete_object(Bucket=_bucket(), Key=key)
+    path = _store_dir() / key
+    path.unlink(missing_ok=True)

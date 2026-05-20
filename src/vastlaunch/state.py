@@ -1,6 +1,6 @@
-"""Postgres-backed state store for vastlaunch jobs.
+"""SQLite-backed state store for vastlaunch jobs.
 
-Requires DATABASE_URL environment variable (standard postgres:// connection string).
+Database path is controlled by the DB_PATH environment variable (default: vastlaunch.db).
 Call migrate() once at application startup to create tables.
 
 Two insertion paths:
@@ -14,12 +14,10 @@ CLI jobs are managed by the CLI process itself.
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from contextlib import contextmanager
 from typing import Any
-
-import psycopg
-from psycopg.rows import dict_row
 
 
 _UPDATABLE_FIELDS = frozenset({
@@ -30,20 +28,18 @@ _UPDATABLE_FIELDS = frozenset({
 _TERMINAL_STATUSES = frozenset({"success", "failed", "stopped"})
 
 
-def _database_url() -> str:
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL is not set. "
-            "Point it at a Postgres instance, e.g. postgresql://user:pass@host/db"
-        )
-    return url
+def _db_path() -> str:
+    return os.environ.get("DB_PATH", "vastlaunch.db")
 
 
 @contextmanager
 def _conn():
-    with psycopg.connect(_database_url(), row_factory=dict_row) as conn:
+    conn = sqlite3.connect(_db_path(), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
         yield conn
+    finally:
+        conn.close()
 
 
 def migrate() -> None:
@@ -52,7 +48,7 @@ def migrate() -> None:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
                 job_id        TEXT PRIMARY KEY,
-                instance_id   BIGINT UNIQUE,
+                instance_id   INTEGER UNIQUE,
                 name          TEXT NOT NULL,
                 config_yaml   TEXT,
                 config_path   TEXT,
@@ -62,19 +58,20 @@ def migrate() -> None:
                 status        TEXT NOT NULL DEFAULT 'queued',
                 exit_code     INTEGER,
                 logs          TEXT,
-                started_at    DOUBLE PRECISION,
-                updated_at    DOUBLE PRECISION
+                poller_log    TEXT,
+                started_at    REAL,
+                updated_at    REAL
             )
         """)
-        conn.execute("""
-            ALTER TABLE jobs ADD COLUMN IF NOT EXISTS workdir_key TEXT
-        """)
-        conn.execute("""
-            ALTER TABLE jobs ADD COLUMN IF NOT EXISTS poller_log TEXT
-        """)
+        # Idempotent column additions for existing databases
+        for col_def in ["workdir_key TEXT", "poller_log TEXT"]:
+            try:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col_def}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS offer_blacklist (
-                offer_id  BIGINT PRIMARY KEY
+                offer_id  INTEGER PRIMARY KEY
             )
         """)
         conn.commit()
@@ -95,7 +92,7 @@ def enqueue(
         conn.execute(
             """
             INSERT INTO jobs (job_id, name, config_yaml, config_path, started_at, status)
-            VALUES (%s, %s, %s, %s, %s, 'queued')
+            VALUES (?, ?, ?, ?, ?, 'queued')
             """,
             (job_id, name, config_yaml, config_path, time.time()),
         )
@@ -115,10 +112,9 @@ def add(
     with _conn() as conn:
         conn.execute(
             """
-            INSERT INTO jobs
+            INSERT OR IGNORE INTO jobs
                 (job_id, instance_id, name, config_path, host, port, started_at, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'launching')
-            ON CONFLICT (job_id) DO NOTHING
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'launching')
             """,
             (job_id, int(instance_id), name, config_path, host, port, time.time()),
         )
@@ -132,7 +128,7 @@ def add(
 def get(instance_id: int | str) -> dict | None:
     with _conn() as conn:
         row = conn.execute(
-            "SELECT * FROM jobs WHERE instance_id = %s",
+            "SELECT * FROM jobs WHERE instance_id = ?",
             (int(instance_id),),
         ).fetchone()
     return dict(row) if row else None
@@ -141,7 +137,7 @@ def get(instance_id: int | str) -> dict | None:
 def get_by_job_id(job_id: str) -> dict | None:
     with _conn() as conn:
         row = conn.execute(
-            "SELECT * FROM jobs WHERE job_id = %s",
+            "SELECT * FROM jobs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
     return dict(row) if row else None
@@ -181,7 +177,7 @@ def append_poller_log(job_id: str, text: str) -> None:
     """Append text to the per-job poller log. Thread-safe via DB serialization."""
     with _conn() as conn:
         conn.execute(
-            "UPDATE jobs SET poller_log = COALESCE(poller_log, '') || %s WHERE job_id = %s",
+            "UPDATE jobs SET poller_log = COALESCE(poller_log, '') || ? WHERE job_id = ?",
             (text, job_id),
         )
         conn.commit()
@@ -192,11 +188,11 @@ def _do_update(where_col: str, where_val: Any, **fields: Any) -> None:
     if invalid:
         raise ValueError(f"unknown job fields: {invalid}")
     updates = {**fields, "updated_at": time.time()}
-    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
     values = list(updates.values()) + [where_val]
     with _conn() as conn:
         conn.execute(
-            f"UPDATE jobs SET {set_clause} WHERE {where_col} = %s",  # noqa: S608
+            f"UPDATE jobs SET {set_clause} WHERE {where_col} = ?",  # noqa: S608
             values,
         )
         conn.commit()
@@ -212,13 +208,13 @@ def update_by_job_id(job_id: str, **fields: Any) -> None:
 
 def remove(instance_id: int | str) -> None:
     with _conn() as conn:
-        conn.execute("DELETE FROM jobs WHERE instance_id = %s", (int(instance_id),))
+        conn.execute("DELETE FROM jobs WHERE instance_id = ?", (int(instance_id),))
         conn.commit()
 
 
 def remove_by_job_id(job_id: str) -> None:
     with _conn() as conn:
-        conn.execute("DELETE FROM jobs WHERE job_id = %s", (job_id,))
+        conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
         conn.commit()
 
 
@@ -235,7 +231,7 @@ def blacklist_get() -> list[int]:
 def blacklist_add(offer_id: int) -> None:
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO offer_blacklist (offer_id) VALUES (%s) ON CONFLICT DO NOTHING",
+            "INSERT OR IGNORE INTO offer_blacklist (offer_id) VALUES (?)",
             (offer_id,),
         )
         conn.commit()
