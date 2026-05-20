@@ -128,11 +128,20 @@ def _do_launch(job: dict) -> None:
     log_job(job_id, f"instance {instance_id} created")
 
 
+_LAUNCHING_TIMEOUT = 1800  # 30 min — vast instances rarely take longer than this
+
+
 def _check_launching(job: dict) -> None:
     """launching → connecting: wait for instance to be running with SSH info."""
     job_id = job["job_id"]
     instance_id = job.get("instance_id")
     if not instance_id:
+        return
+
+    since = time.time() - (job.get("updated_at") or job.get("started_at") or 0)
+    if since > _LAUNCHING_TIMEOUT:
+        log_job(job_id, f"launch timeout after {int(since)}s")
+        _destroy_and_fail(job)
         return
 
     try:
@@ -141,16 +150,24 @@ def _check_launching(job: dict) -> None:
         log_job(job_id, f"show_instance error (transient) — {e}")
         return
 
-    status = info.get("actual_status") or info.get("intended_status") or "?"
+    actual = info.get("actual_status") or "?"
+    intended = info.get("intended_status") or "?"
+    cur = info.get("cur_state") or "?"
+    status = actual
     msg = info.get("status_msg") or ""
 
-    if status == "running":
+    # Treat instance as failed if it has been stopped/deleted by the host,
+    # regardless of what actual_status reports (which may lag as "loading").
+    _STOPPED_STATES = {"stopped", "deleted", "destroyed"}
+    instance_stopped = intended in _STOPPED_STATES or cur in _STOPPED_STATES
+
+    if status == "running" and not instance_stopped:
         host, port = vast.get_ssh_info(info)
         if host and port:
             state.update_by_job_id(job_id, status="connecting", host=host, port=port)
             log_job(job_id, f"instance ready at {host}:{port}")
-    elif status in _TERMINAL_ERROR_STATUSES:
-        log_job(job_id, f"instance failed ({status}) — {msg}")
+    elif status in _TERMINAL_ERROR_STATUSES or instance_stopped:
+        log_job(job_id, f"instance failed (actual={actual} intended={intended} cur={cur}) — {msg}")
         _destroy_and_fail(job)
     elif msg and _status_msg_is_error(msg):
         log_job(job_id, f"startup error — {msg}")
