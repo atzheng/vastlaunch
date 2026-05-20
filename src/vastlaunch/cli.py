@@ -12,6 +12,9 @@ import tarfile
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
+from rich.table import Table
+
 from vastlaunch import client, config, runner, state, vast
 
 
@@ -234,6 +237,60 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+_STATUS_STYLE = {
+    "queued":     "yellow",
+    "launching":  "cyan",
+    "running":    "green",
+    "success":    "bright_green",
+    "failed":     "red",
+    "stopped":    "dim",
+}
+
+
+def _rel_time(ts: float | None) -> str:
+    if not ts:
+        return "—"
+    import time
+    d = int(time.time() - ts)
+    if d < 60:
+        return f"{d}s ago"
+    if d < 3600:
+        return f"{d // 60}m ago"
+    if d < 86400:
+        return f"{d // 3600}h ago"
+    return f"{d // 86400}d ago"
+
+
+def _print_jobs_table(jobs: list[dict]) -> None:
+    table = Table(show_header=True, header_style="bold dim", box=None, pad_edge=False)
+    table.add_column("JOB ID", style="cyan", no_wrap=True)
+    table.add_column("NAME")
+    table.add_column("STATUS", no_wrap=True)
+    table.add_column("INSTANCE", style="dim", no_wrap=True)
+    table.add_column("HOST", style="dim", no_wrap=True)
+    table.add_column("STARTED", style="dim", no_wrap=True)
+    table.add_column("UPDATED", style="dim", no_wrap=True)
+
+    for job in jobs:
+        status = job.get("status") or "?"
+        style = _STATUS_STYLE.get(status, "")
+        instance_id = str(job.get("instance_id") or "—")
+        host = job.get("host")
+        port = job.get("port")
+        host_str = f"{host}:{port}" if host and port else "—"
+        table.add_row(
+            job.get("job_id") or "?",
+            job.get("name") or "—",
+            f"[{style}]{status}[/{style}]" if style else status,
+            instance_id,
+            host_str,
+            _rel_time(job.get("started_at")),
+            _rel_time(job.get("updated_at")),
+        )
+
+    Console().print(table)
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     if client.server_url():
         jobs = client.list_jobs()
@@ -243,21 +300,23 @@ def cmd_list(args: argparse.Namespace) -> int:
         if not jobs:
             print("(no jobs)")
             return 0
-        print(f"{'JOB ID':<30} {'STATUS':<12} {'NAME'}")
-        for job in jobs:
-            print(f"{job.get('job_id', '?'):<30} {job.get('status', '?'):<12} {job.get('name', '?')}")
+        _print_jobs_table(jobs)
         return 0
-    jobs = state.all_jobs()
+    jobs_dict = state.all_jobs()
     if args.json:
-        print(json.dumps(jobs, indent=2))
+        print(json.dumps(jobs_dict, indent=2))
         return 0
-    if not jobs:
+    if not jobs_dict:
         print("(no managed instances)")
         return 0
-    print(f"{'ID':<10} {'STATUS':<12} {'NAME':<30} {'HOST'}")
-    for iid, info in sorted(jobs.items()):
-        host = f"{info.get('host', '?')}:{info.get('port', '?')}"
-        print(f"{iid:<10} {info.get('status', '?'):<12} {info.get('name', '?'):<30} {host}")
+    _print_jobs_table(list(jobs_dict.values()))
+    return 0
+
+
+def cmd_id(args: argparse.Namespace) -> int:
+    """Resolve a partial job ID to the full job ID and print it."""
+    job_id = client.resolve_job_id(args.partial)
+    print(job_id)
     return 0
 
 
@@ -379,6 +438,11 @@ def build_parser() -> argparse.ArgumentParser:
     pse.add_argument("--json", action="store_true")
     _add_resource_overrides(pse)
     pse.set_defaults(func=cmd_search)
+
+    # id ---
+    pid = sub.add_parser("id", help="Resolve a partial job ID to the full job ID.")
+    pid.add_argument("partial", help="Partial job ID (substring match)")
+    pid.set_defaults(func=cmd_id)
 
     # blacklist ---
     pbl = sub.add_parser("blacklist", help="Manage the offer blacklist.")
