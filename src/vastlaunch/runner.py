@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -458,3 +459,72 @@ def destroy(instance_id: int) -> None:
 def stop(instance_id: int) -> None:
     vast.stop_instance(instance_id)
     state.update(instance_id, status="stopped")
+
+
+# ---------------------------------------------------------------------------
+# local mode — run in /tmp for testing
+# ---------------------------------------------------------------------------
+
+def launch_local(job: Job, *, workdir_override: str | None = None) -> int:
+    """Run a job locally under /tmp for testing.
+
+    Syncs workdir, writes envrc + run script, executes in a temp workspace.
+    Returns the process exit code.
+    """
+    job_id = coolname.generate_slug()
+    local_workspace = Path(tempfile.mkdtemp(prefix="vastlaunch-local-"))
+    log(f"local mode: workspace {local_workspace}")
+    log(f"job ID: {job_id}")
+
+    # Write .envrc
+    envrc = local_workspace / ".envrc"
+    lines = []
+    for k, v in job.envs.items():
+        if v == "":
+            continue
+        lines.append(f"export {k}={shlex.quote(str(v))}")
+    for k, v in job.secrets.items():
+        lines.append(f"export {k}={shlex.quote(str(v))}")
+    lines.append(f"export VASTLAUNCH_JOB={shlex.quote(job.name)}")
+    lines.append(f"export VASTLAUNCH_JOB_ID={shlex.quote(job_id)}")
+    envrc.write_text("\n".join(lines) + "\n")
+    envrc.chmod(0o600)
+
+    # Sync workdir
+    workdir = Path(workdir_override or job.workdir or ".").resolve() if (workdir_override or job.workdir) else None
+    if workdir is not None and workdir.exists():
+        log(f"syncing {workdir} -> {local_workspace}/")
+        excludes = list(ssh.DEFAULT_EXCLUDES)
+        ignore = workdir / ".vastignore"
+        if ignore.exists():
+            excludes.extend(
+                line.strip() for line in ignore.read_text().splitlines()
+                if line.strip() and not line.startswith("#")
+            )
+        exclude_args = []
+        for pat in excludes:
+            exclude_args.extend(["--exclude", pat])
+        rc = subprocess.call(
+            ["rsync", "-a", f"{workdir}/", f"{local_workspace}/"] + exclude_args
+        )
+        if rc != 0:
+            raise RuntimeError(f"local rsync failed (rc={rc})")
+
+    # Write run script
+    script = _run_script(job)
+    # Rewrite the script to use our local workspace instead of /workspace
+    script = script.replace(REMOTE_WORKDIR, str(local_workspace))
+    run_script = local_workspace / ".vastlaunch_run.sh"
+    run_script.write_text(script)
+    run_script.chmod(0o755)
+
+    log("running job locally...")
+    rc = subprocess.call(["bash", str(run_script)])
+
+    if rc == 0:
+        log("local job completed successfully")
+    else:
+        log(f"local job failed with exit code {rc}")
+
+    log(f"workspace preserved at {local_workspace}")
+    return rc
