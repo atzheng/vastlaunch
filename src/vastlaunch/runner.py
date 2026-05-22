@@ -518,8 +518,15 @@ def launch_local(job: Job, *, workdir_override: str | None = None) -> int:
     run_script.write_text(script)
     run_script.chmod(0o755)
 
-    log("running job locally...")
-    rc = subprocess.call(["bash", str(run_script)])
+    # Run in a clean environment to simulate a fresh container.
+    # Only pass through essential system vars; job vars come from .envrc.
+    clean_env = {}
+    for var in ("PATH", "HOME", "USER", "TERM", "SHELL", "LANG"):
+        if var in os.environ:
+            clean_env[var] = os.environ[var]
+
+    log("running job locally (clean environment)...")
+    rc = subprocess.call(["bash", str(run_script)], env=clean_env)
 
     if rc == 0:
         log("local job completed successfully")
