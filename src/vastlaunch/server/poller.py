@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -42,6 +43,8 @@ _SSH_KEY = os.environ.get("VASTLAUNCH_SSH_KEY")
 
 _CONNECTING_TIMEOUT = 600  # seconds before giving up on SSH becoming ready
 
+_poll_lock = threading.Lock()
+
 
 def log(msg: str) -> None:
     print(f"[vastlaunch.poller] {msg}", file=sys.stderr, flush=True)
@@ -59,16 +62,22 @@ def log_job(job_id: str, msg: str) -> None:
 
 def poll_all() -> None:
     """Advance the state machine for every active server-submitted job."""
-    jobs = state.all_active_jobs()
-    if not jobs:
+    if not _poll_lock.acquire(blocking=False):
+        log("poll already in progress, skipping")
         return
-    log(f"polling {len(jobs)} active job(s)")
-    for job in jobs:
-        job_id = job["job_id"]
-        try:
-            _advance(job)
-        except Exception as e:
-            log(f"{job_id}: unhandled error — {e}")
+    try:
+        jobs = state.all_active_jobs()
+        if not jobs:
+            return
+        log(f"polling {len(jobs)} active job(s)")
+        for job in jobs:
+            job_id = job["job_id"]
+            try:
+                _advance(job)
+            except Exception as e:
+                log(f"{job_id}: unhandled error — {e}")
+    finally:
+        _poll_lock.release()
 
 
 # ---------------------------------------------------------------------------
