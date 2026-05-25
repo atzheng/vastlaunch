@@ -191,7 +191,7 @@ def list_instances() -> list[dict]:
 
 
 def destroy_instance(instance_id: int | str) -> None:
-    _run(["destroy", "instance", str(instance_id), "-y"], check=False)
+    _run(["destroy", "instance", str(instance_id), "-y"])
 
 
 def stop_instance(instance_id: int | str) -> None:

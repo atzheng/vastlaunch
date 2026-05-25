@@ -62,20 +62,27 @@ def _load_job(args: argparse.Namespace, default_config: str | None = None) -> co
 # ---------------------------------------------------------------------------
 
 def cmd_launch(args: argparse.Namespace) -> int:
-    if args.local:
-        job = _load_job(args, default_config=args.config)
-        rc = runner.launch_local(job)
-        return rc
-    if client.server_url() and not args.dry_run:
-        return _server_submit(args)
-    job = _load_job(args, default_config=args.config)
-    instance_id = runner.launch(
-        job,
-        detach=False,
-        ssh_key=args.ssh_key,
-        dry_run=args.dry_run,
-    )
-    return 0 if instance_id > 0 or args.dry_run else 1
+    configs = args.config if args.config else [None]
+    rc = 0
+    for cfg in configs:
+        single = argparse.Namespace(**vars(args))
+        single.config = cfg
+        if args.local:
+            job = _load_job(single, default_config=cfg)
+            rc = rc or runner.launch_local(job)
+        elif client.server_url() and not args.dry_run:
+            rc = rc or _server_submit(single)
+        else:
+            job = _load_job(single, default_config=cfg)
+            instance_id = runner.launch(
+                job,
+                detach=False,
+                ssh_key=args.ssh_key,
+                dry_run=args.dry_run,
+            )
+            if not (instance_id > 0 or args.dry_run):
+                rc = 1
+    return rc
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
@@ -374,7 +381,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # launch ---
     pl = sub.add_parser("launch", help="Launch a job and stream logs to terminal.")
-    pl.add_argument("config", nargs="?", help="Path to job YAML (default: ./vastlaunch.yaml)")
+    pl.add_argument("config", nargs="*", help="Path(s) to job YAML (default: ./vastlaunch.yaml)")
     pl.add_argument("--dry-run", action="store_true", help="Show what would happen, don't launch")
     pl.add_argument("--local", action="store_true", help="Run locally in /tmp for testing")
     _add_resource_overrides(pl)
