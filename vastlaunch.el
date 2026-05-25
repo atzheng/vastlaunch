@@ -1,5 +1,8 @@
 ;;; vastlaunch.el --- Emacs interface to vastlaunch -*- lexical-binding: t -*-
 
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "27.1"))
+
 ;; Usage: M-x vastlaunch-list
 
 (require 'tabulated-list)
