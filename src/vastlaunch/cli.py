@@ -191,12 +191,20 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
+    import time
     if client.server_url():
         job_id = client.resolve_job_id(args.instance_id)
         if args.follow:
             return _server_follow_logs(job_id)
-        print(client.get_logs(job_id))
-        return 0
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                print(client.get_logs(job_id))
+                return 0
+            except RuntimeError as e:
+                if "503" not in str(e) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(5)
     return runner.stream_logs(int(args.instance_id), follow=args.follow, ssh_key=args.ssh_key)
 
 
@@ -205,14 +213,24 @@ def _server_follow_logs(job_id: str) -> int:
     seen = 0
     job: dict = {}
     while True:
-        chunk = client.get_logs(job_id, since=seen)
+        try:
+            chunk = client.get_logs(job_id, since=seen)
+        except RuntimeError as e:
+            if "503" not in str(e):
+                raise
+            chunk = ""
         if chunk:
             print(chunk, end="", flush=True)
             seen += chunk.count("\n")
         job = client.get_job(job_id)
         if job.get("status") in ("success", "failed", "stopped"):
             # One final fetch to catch any output written right at exit
-            chunk = client.get_logs(job_id, since=seen)
+            try:
+                chunk = client.get_logs(job_id, since=seen)
+            except RuntimeError as e:
+                if "503" not in str(e):
+                    raise
+                chunk = ""
             if chunk:
                 print(chunk, end="", flush=True)
             break
