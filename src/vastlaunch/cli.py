@@ -108,8 +108,16 @@ def _make_workdir_tarball(workdir: Path) -> bytes:
         )
 
     def _filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        # info.name is relative to the arcname root (e.g. "./src/foo.py")
-        rel = info.name.lstrip("./")
+        # info.name is relative to the arcname root (e.g. "./src/foo.py").
+        # NOTE: must strip the "./" *prefix*, not lstrip() the character set
+        # {'.', '/'} -- lstrip would also eat the leading dot off dotfiles/dirs
+        # like "./.git" -> "git", silently breaking exclude patterns such as
+        # ".git", ".venv", ".claude" that depend on matching the leading dot.
+        rel = info.name
+        if rel == ".":
+            rel = ""
+        elif rel.startswith("./"):
+            rel = rel[2:]
         if not rel:
             return info
         parts = Path(rel).parts
